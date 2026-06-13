@@ -2723,10 +2723,125 @@ function renderLegend(){
 }
 
 /* ============================================================================
-   5b. RENDER — TREE (SVG: dynasty lanes × chronological rows)
+   5b. RENDER — TREE (SVG: dynasty COLUMNS × vertical TIME axis)
+   Time flows downward (Y); each dynasty is a column (X). Read a column top→bottom
+   to follow one dynasty's succession; read across a row to see contemporaries.
    ============================================================================ */
 const TREE = { scale:1, tx:0, ty:0, dragging:false, lastX:0, lastY:0, positions:{} };
-const LANE_H = 80, COL_W = 45, NODE_W = 140, NODE_H = 40, PAD_X = 70, PAD_Y = 70;
+const AXIS_W = 66, NODE_W = 152, NODE_H = 36, PAD_TOP = 66, PAD_BOT = 40, SIDE_PAD = 120;
+const TREE_PX_PER_YEAR = 6, MIN_STEP = 50, MAX_STEP = 124, SIBLING_GAP = 20;
+// wrap a label into at most two lines of ~n chars (for column headers)
+function wrap2(s, n){
+  const words = String(s).split(/\s+/); const lines = [""];
+  words.forEach(w => {
+    const cur = lines[lines.length-1];
+    if (!cur) lines[lines.length-1] = w;
+    else if ((cur+" "+w).length <= n) lines[lines.length-1] = cur+" "+w;
+    else lines.push(w);
+  });
+  return lines.slice(0,2);
+}
+
+// Build genealogical parent->children graph for tree layout
+function buildGenealogy(nodes){
+  const children = {}; // parent id -> [child ids]
+  const parents = {};  // child id -> [parent ids]
+  
+  nodes.forEach(n => { children[n.id] = []; parents[n.id] = []; });
+  
+  nodes.forEach(n => {
+    // Biological links
+    (n.biologicalLinks||[]).forEach(targetId => {
+      if (byId(targetId)) {
+        // Determine direction: if n is older, n is parent
+        const nYear = n.accessionYear || n.reignStart || n.year || 0;
+        const tYear = (byId(targetId).accessionYear || byId(targetId).reignStart || byId(targetId).year || 0);
+        if (nYear < tYear) {
+          children[n.id].push(targetId);
+          parents[targetId].push(n.id);
+        } else {
+          children[targetId].push(n.id);
+          parents[n.id].push(targetId);
+        }
+      }
+    });
+    
+    // Adoptive links
+    (n.adoptiveLinks||[]).forEach(targetId => {
+      if (byId(targetId)) {
+        const nYear = n.accessionYear || n.reignStart || n.year || 0;
+        const tYear = (byId(targetId).accessionYear || byId(targetId).reignStart || byId(targetId).year || 0);
+        if (nYear < tYear) {
+          children[n.id].push(targetId);
+          parents[targetId].push(n.id);
+        } else {
+          children[targetId].push(n.id);
+          parents[n.id].push(targetId);
+        }
+      }
+    });
+  });
+  
+  // Find roots (nodes with no parents in the set)
+  const roots = nodes.filter(n => parents[n.id].length === 0 || !parents[n.id].some(pid => nodes.some(x => x.id === pid)));
+  
+  return { children, parents, roots };
+}
+
+// Calculate horizontal positions using a tidy tree layout algorithm
+function calculateTreeLayout(nodes, genealogy){
+  const { children, roots } = genealogy;
+  const positions = {};
+  
+  // Assign each node a depth and horizontal position
+  let nextX = SIDE_PAD;
+  
+  function traverse(nodeId, depth){
+    const node = byId(nodeId);
+    if (!node) return;
+    
+    const nodeChildren = children[nodeId].filter(cid => nodes.some(n => n.id === cid));
+    
+    if (nodeChildren.length === 0) {
+      // Leaf node
+      positions[nodeId] = { x: nextX, depth };
+      nextX += NODE_W + SIBLING_GAP;
+    } else {
+      // Internal node - position based on children
+      nodeChildren.forEach(cid => traverse(cid, depth + 1));
+      
+      const childPositions = nodeChildren.map(cid => positions[cid].x);
+      const firstChild = Math.min(...childPositions);
+      const lastChild = Math.max(...childPositions);
+      
+      // Center over children
+      positions[nodeId] = { x: (firstChild + lastChild) / 2, depth };
+    }
+  }
+  
+  // Start from roots
+  roots.forEach(root => traverse(root.id, 0));
+  
+  // Post-process: assign final X positions compacted by depth
+  const depthLists = {};
+  Object.entries(positions).forEach(([id, pos]) => {
+    if (!depthLists[pos.depth]) depthLists[pos.depth] = [];
+    depthLists[pos.depth].push({ id, originalX: pos.x });
+  });
+  
+  // Sort each depth level by original X and compact
+  const finalX = {};
+  Object.entries(depthLists).forEach(([depth, items]) => {
+    items.sort((a, b) => a.originalX - b.originalX);
+    let currentX = SIDE_PAD;
+    items.forEach(item => {
+      finalX[item.id] = currentX;
+      currentX += NODE_W + SIBLING_GAP;
+    });
+  });
+  
+  return finalX;
+}
 
 function buildEdges(visibleIds){
   const seen = new Set(), edges = [];
@@ -2762,35 +2877,80 @@ function renderTree(){
   const svg = $("#treeSvg");
   const filtered = chronoSort(getTreeNodes());
   const visibleIds = new Set(filtered.map(e => e.id));
+  if (!filtered.length){
+    svg.innerHTML = ""; svg.setAttribute("width", 10); svg.setAttribute("height", 10);
+    renderStacked(filtered); return;
+  }
 
-  // lane index per dynasty (only lanes that contain visible emperors, preserving order)
-  const lanesUsed = DATA.dynasties.filter(d => filtered.some(e => e.dynasty === d.key));
-  const laneIndex = Object.fromEntries(lanesUsed.map((d,i) => [d.key, i]));
+  // ---- Y: time flows downward, compressed-proportional ----
+  const yearOf = n => isPerson(n) ? (n.year ?? 0) : (n.accessionYear ?? n.reignStart ?? 0);
+  const uniqueYears = [...new Set(filtered.map(yearOf))].sort((a,b)=>a-b);
+  const baseY = {}; let acc = PAD_TOP;
+  uniqueYears.forEach((y,i) => {
+    if (i>0){ const gap = y - uniqueYears[i-1]; acc += Math.min(MAX_STEP, Math.max(MIN_STEP, gap*TREE_PX_PER_YEAR)); }
+    baseY[y] = acc;
+  });
 
+  // ---- X: genealogical tree layout ----
+  const genealogy = buildGenealogy(filtered);
+  const treeX = calculateTreeLayout(filtered, genealogy);
+
+  // ---- combine positions ----
   const positions = {};
-  // Calculate year range for horizontal scaling
-  const years = filtered.map(e => e.accessionYear || e.reignStart);
-  const minYear = Math.min(...years);
-  const maxYear = Math.max(...years);
-  const yearRange = Math.max(1, maxYear - minYear);
-  
   filtered.forEach(e => {
-    const year = e.accessionYear || e.reignStart;
-    // X position based on time (horizontal)
-    const lx = PAD_X + ((year - minYear) / yearRange) * (filtered.length * COL_W);
-    // Y position based on dynasty lane (vertical)
-    const ly = PAD_Y + laneIndex[e.dynasty] * LANE_H;
-    positions[e.id] = {x: lx, y: ly, cx: lx + NODE_W/2, cy: ly + NODE_H/2, e};
+    const x = treeX[e.id] ?? SIDE_PAD;
+    const y = baseY[yearOf(e)];
+    positions[e.id] = {x: x, y: y, cx: x + NODE_W/2, cy: y + NODE_H/2, e};
   });
   TREE.positions = positions;
 
-  const width  = PAD_X*2 + filtered.length * COL_W + NODE_W;
-  const height = PAD_Y*2 + Math.max(1, lanesUsed.length) * LANE_H;
+  const maxX = Math.max(...Object.values(positions).map(p => p.x + NODE_W));
+  const maxBottom = Math.max(...Object.values(positions).map(p => p.y + NODE_H));
+  const width = Math.max(AXIS_W + maxX + SIDE_PAD, 800);
+  const height = maxBottom + PAD_BOT;
   svg.setAttribute("width", width);
   svg.setAttribute("height", height);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
-  // edges
+  // ---- dynasty time bands (horizontal bands showing when each dynasty ruled) ----
+  let bandSvg = "";
+  DATA.dynasties.forEach(d => {
+    // Find the year range for this dynasty among visible emperors
+    const dynastyEmperors = filtered.filter(e => e.dynasty === d.key && !isPerson(e));
+    if (dynastyEmperors.length === 0) return;
+    
+    const years = dynastyEmperors.map(e => [e.reignStart, e.reignEnd]).flat();
+    const minYear = Math.min(...years);
+    const maxYear = Math.max(...years);
+    
+    if (minYear in baseY && maxYear in baseY) {
+      const yTop = baseY[minYear] - 8;
+      const yBottom = baseY[maxYear] + NODE_H + 8;
+      const bandHeight = yBottom - yTop;
+      
+      bandSvg += `<rect x="${AXIS_W}" y="${yTop}" width="${width-AXIS_W-8}" height="${bandHeight}" 
+        fill="${d.color}" fill-opacity="0.08"/>
+        <text x="${width-12}" y="${yTop+14}" text-anchor="end" font-size="11" font-weight="700" fill="${d.color}" 
+        opacity="0.9">${esc(d.label)} · ${fmtYear(minYear)}–${fmtYear(maxYear)}</text>
+        <line x1="${AXIS_W}" y1="${yTop}" x2="${width-8}" y2="${yTop}" stroke="${d.color}" stroke-opacity="0.25" stroke-width="1"/>
+        <line x1="${AXIS_W}" y1="${yBottom}" x2="${width-8}" y2="${yBottom}" stroke="${d.color}" stroke-opacity="0.25" stroke-width="1"/>`;
+    }
+  });
+
+  // ---- left time axis: gridlines + year labels ----
+  let axisSvg = `<line x1="${AXIS_W-1}" y1="${PAD_TOP-34}" x2="${AXIS_W-1}" y2="${height-6}" stroke="var(--line-strong)"/>
+    <text x="${AXIS_W-8}" y="${PAD_TOP-42}" text-anchor="end" font-size="10" font-weight="700" fill="var(--ink-faint)">YEAR</text>`;
+  let lastLabelY = -999;
+  uniqueYears.forEach(y => {
+    const yy = baseY[y] + NODE_H/2;
+    if (yy - lastLabelY >= 24){
+      axisSvg += `<line x1="${AXIS_W-1}" y1="${yy}" x2="${width-8}" y2="${yy}" stroke="var(--line)" stroke-opacity="0.45"/>
+        <text x="${AXIS_W-8}" y="${yy+3}" text-anchor="end" font-size="10" fill="var(--ink-faint)">${esc(fmtYear(y))}</text>`;
+      lastLabelY = yy;
+    }
+  });
+
+  // ---- edges (curved paths for family relationships) ----
   const edges = STATE.study ? buildEdges(visibleIds).filter(e => e.type === "succ" || e.type === "co")
                             : buildEdges(visibleIds);
   let edgeSvg = "";
@@ -2798,34 +2958,26 @@ function renderTree(){
     const pa = positions[a], pb = positions[b]; if (!pa || !pb) return;
     const st = EDGE_STYLE[type];
     const x1 = pa.cx, y1 = pa.cy, x2 = pb.cx, y2 = pb.cy;
-    const my = (y1 + y2) / 2;
-    const d = `M ${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`;
+    // Use S-curve for horizontal tree layout
+    const mx = (x1 + x2) / 2;
+    const d = `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
     edgeSvg += `<path class="edge" d="${d}" stroke="${st.color}" stroke-width="${st.w}"
       ${st.dash?`stroke-dasharray="${st.dash}"`:""} ${st.arrow?'marker-end="url(#arrow)"':""}/>`;
   });
 
-  // scope divider: after Constantine the Great (year 337)
+  // ---- horizontal scope divider between core (≤ Constantine) and later emperors ----
   let scopeSvg = "";
-  const constantineEndYear = 337;
-  if (minYear <= constantineEndYear && maxYear > constantineEndYear){
-    const xLine = PAD_X + ((constantineEndYear - minYear) / yearRange) * (filtered.length * COL_W) + NODE_W/2;
+  const constantine = byId("constantine");
+  if (constantine && positions[constantine.id]) {
+    const yLine = positions[constantine.id].y + NODE_H + 14;
     scopeSvg = `<g class="scopeband">
-      <line x1="${xLine}" y1="10" x2="${xLine}" y2="${height-10}" stroke="var(--core)" stroke-width="2" stroke-dasharray="3 5"/>
-      <rect x="${xLine-160}" y="14" width="320" height="18" rx="4" fill="var(--bg-panel)" opacity="0.9"/>
-      <text x="${xLine}" y="${27}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--core)">▼ End of core NJCL scope (Constantine)</text>
+      <line x1="${AXIS_W-1}" y1="${yLine}" x2="${width-8}" y2="${yLine}" stroke="var(--core)" stroke-width="2" stroke-dasharray="4 5"/>
+      <rect x="${AXIS_W+6}" y="${yLine-10}" width="340" height="20" rx="5" fill="var(--bg-panel)" stroke="var(--core)"/>
+      <text x="${AXIS_W+14}" y="${yLine+4}" font-size="11" font-weight="700" fill="var(--core)">▼ End of core NJCL scope (Constantine the Great)</text>
     </g>`;
   }
 
-  // lane labels (vertical on left side)
-  let laneSvg = "";
-  lanesUsed.forEach((d, i) => {
-    const y = PAD_Y + i*LANE_H + NODE_H/2;
-    laneSvg += `<text class="lane-label" x="${PAD_X-12}" y="${y}" text-anchor="end"
-      font-size="12" fill="${d.color}">${esc(d.label)}</text>
-      <line x1="${PAD_X-4}" y1="${y}" x2="${width-20}" y2="${y}" stroke="${d.color}" stroke-opacity="0.12" stroke-width="${LANE_H-14}"/>`;
-  });
-
-  // nodes — emperors render as solid rects; people (relatives/figures) as outlined "ovals"
+  // ---- nodes — emperors as solid rects; people (relatives/figures) as dashed ovals ----
   let nodeSvg = "";
   filtered.forEach(e => {
     const p = positions[e.id]; const d = dyn(e.dynasty);
@@ -2835,8 +2987,8 @@ function renderTree(){
           aria-label="${esc(e.displayName)} (relative/figure), ${esc(d.label)}">
         <rect x="${p.x}" y="${p.y}" width="${NODE_W}" height="${NODE_H}" rx="${NODE_H/2}"
           fill="var(--bg-panel)" stroke="${d.color}" stroke-width="1.6" stroke-dasharray="4 3"/>
-        <text class="nname" x="${p.x+12}" y="${p.y+16}" fill="${d.color}" font-style="italic" font-size="12">${esc(e.displayName).slice(0,19)}</text>
-        <text class="ndate" x="${p.x+12}" y="${p.y+30}" fill="var(--ink-faint)" font-size="9.5">${esc(e.role||"").slice(0,26)}</text>
+        <text class="nname" x="${p.x+12}" y="${p.y+15}" fill="${d.color}" font-style="italic" font-size="12">${esc(e.displayName).slice(0,20)}</text>
+        <text class="ndate" x="${p.x+12}" y="${p.y+28}" fill="var(--ink-faint)" font-size="9.5">${esc(e.role||"").slice(0,30)}</text>
       </g>`;
       return;
     }
@@ -2845,10 +2997,10 @@ function renderTree(){
         aria-label="${esc(e.displayName)}, ${esc(d.label)}">
       <rect x="${p.x}" y="${p.y}" width="${NODE_W}" height="${NODE_H}" rx="8"
         fill="${d.color}" fill-opacity="${e.isMajor?0.95:0.78}" stroke="${d.color}" ${dashCore}/>
-      <text class="nname" x="${p.x+9}" y="${p.y+17}" fill="#fff">${esc(e.displayName).slice(0,18)}</text>
-      <text class="ndate" x="${p.x+9}" y="${p.y+31}" fill="#fff">${fmtYear(e.reignStart)}–${fmtYear(e.reignEnd)}</text>
+      <text class="nname" x="${p.x+9}" y="${p.y+16}" fill="#fff">${esc(e.displayName).slice(0,19)}</text>
+      <text class="ndate" x="${p.x+9}" y="${p.y+29}" fill="#fff">${fmtYear(e.reignStart)}–${fmtYear(e.reignEnd)}</text>
       ${isNjclImportant(e)?`<text x="${p.x+NODE_W-8}" y="${p.y+15}" text-anchor="end" font-size="11" fill="#ffe9a8">★</text>`:""}
-      <text class="favmark" x="${p.x+NODE_W-8}" y="${p.y+31}" text-anchor="end" font-size="11" fill="#ffd0d8">♥</text>
+      <text class="favmark" x="${p.x+NODE_W-8}" y="${p.y+30}" text-anchor="end" font-size="11" fill="#ffd0d8">♥</text>
     </g>`;
   });
 
@@ -2856,7 +3008,7 @@ function renderTree(){
       <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
         <path d="M0,0 L7,3 L0,6 Z" fill="var(--ink-faint)"/>
       </marker>
-    </defs>${laneSvg}${edgeSvg}${scopeSvg}${nodeSvg}`;
+    </defs>${bandSvg}${axisSvg}${edgeSvg}${scopeSvg}${nodeSvg}`;
 
   applyTreeTransform();
   // wire node clicks
@@ -2874,12 +3026,12 @@ function applyTreeTransform(){
   $("#treeSvg").style.transform = `translate(${TREE.tx}px,${TREE.ty}px) scale(${TREE.scale})`;
 }
 function fitTree(){
-  // The tree is a tall chronological "staircase," so fit to WIDTH (not height) to keep
-  // node text legible; the user pans/scrolls vertically through the centuries.
+  // Vertical-time layout: fit to WIDTH so every dynasty column is visible at once;
+  // the user scrolls/pans DOWN through the centuries.
   const stage = $("#treeStage"), svg = $("#treeSvg");
-  const w = parseFloat(svg.getAttribute("width"));
+  const w = parseFloat(svg.getAttribute("width")) || 1;
   const sw = stage.clientWidth;
-  TREE.scale = Math.max(0.5, Math.min(1.1, (sw - 16) / w));
+  TREE.scale = Math.max(0.4, Math.min(1.0, (sw - 12) / w));
   TREE.tx = Math.max(0, (sw - w*TREE.scale)/2);
   TREE.ty = 8;
   applyTreeTransform();
