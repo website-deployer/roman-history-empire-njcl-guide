@@ -2726,7 +2726,7 @@ function renderLegend(){
    5b. RENDER — TREE (SVG: dynasty lanes × chronological rows)
    ============================================================================ */
 const TREE = { scale:1, tx:0, ty:0, dragging:false, lastX:0, lastY:0, positions:{} };
-const LANE_W = 165, ROW_H = 62, NODE_W = 140, NODE_H = 40, PAD_X = 70, PAD_Y = 56;
+const LANE_H = 80, COL_W = 45, NODE_W = 140, NODE_H = 40, PAD_X = 70, PAD_Y = 70;
 
 function buildEdges(visibleIds){
   const seen = new Set(), edges = [];
@@ -2768,15 +2768,24 @@ function renderTree(){
   const laneIndex = Object.fromEntries(lanesUsed.map((d,i) => [d.key, i]));
 
   const positions = {};
-  filtered.forEach((e, row) => {
-    const lx = PAD_X + laneIndex[e.dynasty] * LANE_W;
-    const ly = PAD_Y + row * ROW_H;
+  // Calculate year range for horizontal scaling
+  const years = filtered.map(e => e.accessionYear || e.reignStart);
+  const minYear = Math.min(...years);
+  const maxYear = Math.max(...years);
+  const yearRange = Math.max(1, maxYear - minYear);
+  
+  filtered.forEach(e => {
+    const year = e.accessionYear || e.reignStart;
+    // X position based on time (horizontal)
+    const lx = PAD_X + ((year - minYear) / yearRange) * (filtered.length * COL_W);
+    // Y position based on dynasty lane (vertical)
+    const ly = PAD_Y + laneIndex[e.dynasty] * LANE_H;
     positions[e.id] = {x: lx, y: ly, cx: lx + NODE_W/2, cy: ly + NODE_H/2, e};
   });
   TREE.positions = positions;
 
-  const width  = PAD_X*2 + Math.max(1, lanesUsed.length) * LANE_W;
-  const height = PAD_Y*2 + filtered.length * ROW_H;
+  const width  = PAD_X*2 + filtered.length * COL_W + NODE_W;
+  const height = PAD_Y*2 + Math.max(1, lanesUsed.length) * LANE_H;
   svg.setAttribute("width", width);
   svg.setAttribute("height", height);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -2789,31 +2798,31 @@ function renderTree(){
     const pa = positions[a], pb = positions[b]; if (!pa || !pb) return;
     const st = EDGE_STYLE[type];
     const x1 = pa.cx, y1 = pa.cy, x2 = pb.cx, y2 = pb.cy;
-    const mx = (x1 + x2) / 2;
-    const d = `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
+    const my = (y1 + y2) / 2;
+    const d = `M ${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`;
     edgeSvg += `<path class="edge" d="${d}" stroke="${st.color}" stroke-width="${st.w}"
       ${st.dash?`stroke-dasharray="${st.dash}"`:""} ${st.arrow?'marker-end="url(#arrow)"':""}/>`;
   });
 
-  // scope divider: after the last CORE-scope row
+  // scope divider: after Constantine the Great (year 337)
   let scopeSvg = "";
-  const lastCoreRow = filtered.reduce((acc,e,i) => e.scopeTier === "core" ? i : acc, -1);
-  if (lastCoreRow >= 0 && lastCoreRow < filtered.length - 1){
-    const yLine = PAD_Y + (lastCoreRow + 1) * ROW_H - (ROW_H - NODE_H)/2 + 6;
+  const constantineEndYear = 337;
+  if (minYear <= constantineEndYear && maxYear > constantineEndYear){
+    const xLine = PAD_X + ((constantineEndYear - minYear) / yearRange) * (filtered.length * COL_W) + NODE_W/2;
     scopeSvg = `<g class="scopeband">
-      <line x1="10" y1="${yLine}" x2="${width-10}" y2="${yLine}" stroke="var(--core)" stroke-width="2" stroke-dasharray="3 5"/>
-      <rect x="14" y="${yLine-9}" width="320" height="18" rx="4" fill="var(--bg-panel)" opacity="0.9"/>
-      <text x="22" y="${yLine+4}" font-size="11" font-weight="700" fill="var(--core)">▼ End of core NJCL scope (Constantine the Great)</text>
+      <line x1="${xLine}" y1="10" x2="${xLine}" y2="${height-10}" stroke="var(--core)" stroke-width="2" stroke-dasharray="3 5"/>
+      <rect x="${xLine-160}" y="14" width="320" height="18" rx="4" fill="var(--bg-panel)" opacity="0.9"/>
+      <text x="${xLine}" y="${27}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--core)">▼ End of core NJCL scope (Constantine)</text>
     </g>`;
   }
 
-  // lane labels
+  // lane labels (vertical on left side)
   let laneSvg = "";
   lanesUsed.forEach((d, i) => {
-    const x = PAD_X + i*LANE_W + NODE_W/2;
-    laneSvg += `<text class="lane-label" x="${x}" y="${PAD_Y-26}" text-anchor="middle"
+    const y = PAD_Y + i*LANE_H + NODE_H/2;
+    laneSvg += `<text class="lane-label" x="${PAD_X-12}" y="${y}" text-anchor="end"
       font-size="12" fill="${d.color}">${esc(d.label)}</text>
-      <line x1="${x}" y1="${PAD_Y-18}" x2="${x}" y2="${height-20}" stroke="${d.color}" stroke-opacity="0.12" stroke-width="${LANE_W-14}"/>`;
+      <line x1="${PAD_X-4}" y1="${y}" x2="${width-20}" y2="${y}" stroke="${d.color}" stroke-opacity="0.12" stroke-width="${LANE_H-14}"/>`;
   });
 
   // nodes — emperors render as solid rects; people (relatives/figures) as outlined "ovals"
