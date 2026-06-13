@@ -2728,8 +2728,8 @@ function renderLegend(){
    to follow one dynasty's succession; read across a row to see contemporaries.
    ============================================================================ */
 const TREE = { scale:1, tx:0, ty:0, dragging:false, lastX:0, lastY:0, positions:{} };
-const AXIS_W = 66, NODE_W = 152, NODE_H = 36, PAD_TOP = 66, PAD_BOT = 40, SIDE_PAD = 120;
-const TREE_PX_PER_YEAR = 6, MIN_STEP = 50, MAX_STEP = 124, SIBLING_GAP = 20;
+const AXIS_W = 66, NODE_W = 120, NODE_H = 34, PAD_TOP = 66, PAD_BOT = 40, SIDE_PAD = 80;
+const TREE_PX_PER_YEAR = 6, MIN_STEP = 50, MAX_STEP = 124, SIBLING_GAP = 12;
 // Calculate horizontal positions using a simple time-grouped layout
 function calculateTreeLayout(nodes){
   const positions = {};
@@ -2757,7 +2757,7 @@ function calculateTreeLayout(nodes){
       positions[n.id] = currentX;
       currentX += NODE_W + SIBLING_GAP;
     });
-    currentX += 30; // Extra spacing between groups
+    currentX += 15; // Extra spacing between groups
   });
   
   return positions;
@@ -2884,6 +2884,28 @@ function renderTree(){
       ${st.dash?`stroke-dasharray="${st.dash}"`:""} ${st.arrow?'marker-end="url(#arrow)"':""}/>`;
   });
 
+  // ---- edge legend ----
+  const legendItems = [
+    { type: "succ", label: "Succession", color: "var(--ink-faint)" },
+    { type: "bio", label: "Biological", color: "#2e8b57" },
+    { type: "adopt", label: "Adoptive", color: "#c79a2e" },
+    { type: "marry", label: "Marriage", color: "#5a6fb0" },
+    { type: "co", label: "Co-emperor", color: "#b0506a" },
+    { type: "assoc", label: "Associate/Advisor", color: "#8a8580" },
+    { type: "power", label: "Faction/Military", color: "#b23b3b" }
+  ];
+  let legendSvg = `<g transform="translate(${AXIS_W + 10}, ${PAD_TOP - 24})">
+    <rect x="-6" y="-12" width="280" height="106" rx="6" fill="var(--bg-panel)" stroke="var(--line-strong)" stroke-width="1" opacity="0.95"/>
+    <text x="0" y="0" font-size="10" font-weight="700" fill="var(--ink-soft)">RELATIONSHIP LINES</text>`;
+  legendItems.forEach((item, i) => {
+    const st = EDGE_STYLE[item.type];
+    const y = 14 + i * 13;
+    legendSvg += `<line x1="0" y1="${y}" x2="24" y2="${y}" stroke="${st.color}" stroke-width="${st.w}" 
+      ${st.dash?`stroke-dasharray="${st.dash}"`:""} ${item.type==='succ'?'marker-end="url(#arrow)"':""}/>
+    <text x="32" y="${y+3}" font-size="9" fill="var(--ink-soft)">${item.label}</text>`;
+  });
+  legendSvg += `</g>`;
+
   // ---- horizontal scope divider between core (≤ Constantine) and later emperors ----
   let scopeSvg = "";
   const constantine = byId("constantine");
@@ -2906,8 +2928,8 @@ function renderTree(){
           aria-label="${esc(e.displayName)} (relative/figure), ${esc(d.label)}">
         <rect x="${p.x}" y="${p.y}" width="${NODE_W}" height="${NODE_H}" rx="${NODE_H/2}"
           fill="var(--bg-panel)" stroke="${d.color}" stroke-width="1.6" stroke-dasharray="4 3"/>
-        <text class="nname" x="${p.x+12}" y="${p.y+15}" fill="${d.color}" font-style="italic" font-size="12">${esc(e.displayName).slice(0,20)}</text>
-        <text class="ndate" x="${p.x+12}" y="${p.y+28}" fill="var(--ink-faint)" font-size="9.5">${esc(e.role||"").slice(0,30)}</text>
+        <text class="nname" x="${p.x+8}" y="${p.y+14}" fill="${d.color}" font-style="italic" font-size="11">${esc(e.displayName).slice(0,18)}</text>
+        <text class="ndate" x="${p.x+8}" y="${p.y+26}" fill="var(--ink-faint)" font-size="8.5">${esc(e.role||"").slice(0,24)}</text>
       </g>`;
       return;
     }
@@ -2916,10 +2938,10 @@ function renderTree(){
         aria-label="${esc(e.displayName)}, ${esc(d.label)}">
       <rect x="${p.x}" y="${p.y}" width="${NODE_W}" height="${NODE_H}" rx="8"
         fill="${d.color}" fill-opacity="${e.isMajor?0.95:0.78}" stroke="${d.color}" ${dashCore}/>
-      <text class="nname" x="${p.x+9}" y="${p.y+16}" fill="#fff">${esc(e.displayName).slice(0,19)}</text>
-      <text class="ndate" x="${p.x+9}" y="${p.y+29}" fill="#fff">${fmtYear(e.reignStart)}–${fmtYear(e.reignEnd)}</text>
-      ${isNjclImportant(e)?`<text x="${p.x+NODE_W-8}" y="${p.y+15}" text-anchor="end" font-size="11" fill="#ffe9a8">★</text>`:""}
-      <text class="favmark" x="${p.x+NODE_W-8}" y="${p.y+30}" text-anchor="end" font-size="11" fill="#ffd0d8">♥</text>
+      <text class="nname" x="${p.x+7}" y="${p.y+15}" fill="#fff">${esc(e.displayName).slice(0,16)}</text>
+      <text class="ndate" x="${p.x+7}" y="${p.y+27}" fill="#fff">${fmtYear(e.reignStart)}–${fmtYear(e.reignEnd)}</text>
+      ${isNjclImportant(e)?`<text x="${p.x+NODE_W-7}" y="${p.y+14}" text-anchor="end" font-size="10" fill="#ffe9a8">★</text>`:""}
+      <text class="favmark" x="${p.x+NODE_W-7}" y="${p.y+27}" text-anchor="end" font-size="10" fill="#ffd0d8">♥</text>
     </g>`;
   });
 
@@ -2927,7 +2949,7 @@ function renderTree(){
       <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
         <path d="M0,0 L7,3 L0,6 Z" fill="var(--ink-faint)"/>
       </marker>
-    </defs>${bandSvg}${axisSvg}${edgeSvg}${scopeSvg}${nodeSvg}`;
+    </defs>${bandSvg}${axisSvg}${legendSvg}${edgeSvg}${scopeSvg}${nodeSvg}`;
 
   applyTreeTransform();
   // wire node clicks
