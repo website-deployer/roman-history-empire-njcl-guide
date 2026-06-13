@@ -2730,117 +2730,37 @@ function renderLegend(){
 const TREE = { scale:1, tx:0, ty:0, dragging:false, lastX:0, lastY:0, positions:{} };
 const AXIS_W = 66, NODE_W = 152, NODE_H = 36, PAD_TOP = 66, PAD_BOT = 40, SIDE_PAD = 120;
 const TREE_PX_PER_YEAR = 6, MIN_STEP = 50, MAX_STEP = 124, SIBLING_GAP = 20;
-// wrap a label into at most two lines of ~n chars (for column headers)
-function wrap2(s, n){
-  const words = String(s).split(/\s+/); const lines = [""];
-  words.forEach(w => {
-    const cur = lines[lines.length-1];
-    if (!cur) lines[lines.length-1] = w;
-    else if ((cur+" "+w).length <= n) lines[lines.length-1] = cur+" "+w;
-    else lines.push(w);
-  });
-  return lines.slice(0,2);
-}
-
-// Build genealogical parent->children graph for tree layout
-function buildGenealogy(nodes){
-  const children = {}; // parent id -> [child ids]
-  const parents = {};  // child id -> [parent ids]
-  
-  nodes.forEach(n => { children[n.id] = []; parents[n.id] = []; });
-  
-  nodes.forEach(n => {
-    // Biological links
-    (n.biologicalLinks||[]).forEach(targetId => {
-      if (byId(targetId)) {
-        // Determine direction: if n is older, n is parent
-        const nYear = n.accessionYear || n.reignStart || n.year || 0;
-        const tYear = (byId(targetId).accessionYear || byId(targetId).reignStart || byId(targetId).year || 0);
-        if (nYear < tYear) {
-          children[n.id].push(targetId);
-          parents[targetId].push(n.id);
-        } else {
-          children[targetId].push(n.id);
-          parents[n.id].push(targetId);
-        }
-      }
-    });
-    
-    // Adoptive links
-    (n.adoptiveLinks||[]).forEach(targetId => {
-      if (byId(targetId)) {
-        const nYear = n.accessionYear || n.reignStart || n.year || 0;
-        const tYear = (byId(targetId).accessionYear || byId(targetId).reignStart || byId(targetId).year || 0);
-        if (nYear < tYear) {
-          children[n.id].push(targetId);
-          parents[targetId].push(n.id);
-        } else {
-          children[targetId].push(n.id);
-          parents[n.id].push(targetId);
-        }
-      }
-    });
-  });
-  
-  // Find roots (nodes with no parents in the set)
-  const roots = nodes.filter(n => parents[n.id].length === 0 || !parents[n.id].some(pid => nodes.some(x => x.id === pid)));
-  
-  return { children, parents, roots };
-}
-
-// Calculate horizontal positions using a tidy tree layout algorithm
-function calculateTreeLayout(nodes, genealogy){
-  const { children, roots } = genealogy;
+// Calculate horizontal positions using a simple time-grouped layout
+function calculateTreeLayout(nodes){
   const positions = {};
   
-  // Assign each node a depth and horizontal position
-  let nextX = SIDE_PAD;
+  // Group nodes by dynasty for horizontal grouping
+  const dynasties = [...new Set(nodes.map(n => n.dynasty))];
+  const dynastyIndex = Object.fromEntries(dynasties.map((d, i) => [d, i]));
   
-  function traverse(nodeId, depth){
-    const node = byId(nodeId);
-    if (!node) return;
-    
-    const nodeChildren = children[nodeId].filter(cid => nodes.some(n => n.id === cid));
-    
-    if (nodeChildren.length === 0) {
-      // Leaf node
-      positions[nodeId] = { x: nextX, depth };
-      nextX += NODE_W + SIBLING_GAP;
-    } else {
-      // Internal node - position based on children
-      nodeChildren.forEach(cid => traverse(cid, depth + 1));
-      
-      const childPositions = nodeChildren.map(cid => positions[cid].x);
-      const firstChild = Math.min(...childPositions);
-      const lastChild = Math.max(...childPositions);
-      
-      // Center over children
-      positions[nodeId] = { x: (firstChild + lastChild) / 2, depth };
-    }
-  }
-  
-  // Start from roots
-  roots.forEach(root => traverse(root.id, 0));
-  
-  // Post-process: assign final X positions compacted by depth
-  const depthLists = {};
-  Object.entries(positions).forEach(([id, pos]) => {
-    if (!depthLists[pos.depth]) depthLists[pos.depth] = [];
-    depthLists[pos.depth].push({ id, originalX: pos.x });
+  // Within each dynasty group by time period to avoid overcrowding
+  const timeGroups = {};
+  nodes.forEach(n => {
+    const period = Math.floor((n.accessionYear || n.reignStart || n.year || 0) / 25) * 25; // 25-year buckets
+    const key = `${n.dynasty}-${period}`;
+    if (!timeGroups[key]) timeGroups[key] = [];
+    timeGroups[key].push(n);
   });
   
-  // Sort each depth level by original X and compact
-  const finalX = {};
-  Object.entries(depthLists).forEach(([depth, items]) => {
-    items.sort((a, b) => a.originalX - b.originalX);
-    let currentX = SIDE_PAD;
-    items.forEach(item => {
-      finalX[item.id] = currentX;
+  // Assign positions
+  let currentX = AXIS_W;
+  const groupKeys = Object.keys(timeGroups).sort();
+  
+  groupKeys.forEach(key => {
+    const group = timeGroups[key];
+    group.forEach(n => {
+      positions[n.id] = currentX;
       currentX += NODE_W + SIBLING_GAP;
     });
+    currentX += 30; // Extra spacing between groups
   });
   
-  return finalX;
+  return positions;
 }
 
 function buildEdges(visibleIds){
@@ -2891,9 +2811,8 @@ function renderTree(){
     baseY[y] = acc;
   });
 
-  // ---- X: genealogical tree layout ----
-  const genealogy = buildGenealogy(filtered);
-  const treeX = calculateTreeLayout(filtered, genealogy);
+  // ---- X: horizontal layout grouped by dynasty and time ----
+  const treeX = calculateTreeLayout(filtered);
 
   // ---- combine positions ----
   const positions = {};
