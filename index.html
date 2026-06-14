@@ -2730,34 +2730,53 @@ function renderLegend(){
 const TREE = { scale:1, tx:0, ty:0, dragging:false, lastX:0, lastY:0, positions:{} };
 const AXIS_W = 66, NODE_W = 120, NODE_H = 34, PAD_TOP = 66, PAD_BOT = 40, SIDE_PAD = 80;
 const TREE_PX_PER_YEAR = 6, MIN_STEP = 50, MAX_STEP = 124, SIBLING_GAP = 12;
-// Calculate horizontal positions using a simple time-grouped layout
+// Calculate horizontal positions using stable dynasty lanes
 function calculateTreeLayout(nodes){
   const positions = {};
   
-  // Group nodes by dynasty for horizontal grouping
-  const dynasties = [...new Set(nodes.map(n => n.dynasty))];
-  const dynastyIndex = Object.fromEntries(dynasties.map((d, i) => [d, i]));
-  
-  // Within each dynasty group by time period to avoid overcrowding
-  const timeGroups = {};
-  nodes.forEach(n => {
-    const period = Math.floor((n.accessionYear || n.reignStart || n.year || 0) / 25) * 25; // 25-year buckets
-    const key = `${n.dynasty}-${period}`;
-    if (!timeGroups[key]) timeGroups[key] = [];
-    timeGroups[key].push(n);
+  // Group nodes by dynasty for stable horizontal lanes
+  const dynasties = [...new Set(nodes.map(n => n.dynasty))].sort((a, b) => {
+    // Sort dynasties by their order in DATA.dynasties
+    const aIdx = DATA.dynasties.findIndex(d => d.key === a);
+    const bIdx = DATA.dynasties.findIndex(d => d.key === b);
+    return (aIdx === -1 ? 999 : aIdx) - (bIdx === -1 ? 999 : bIdx);
   });
   
-  // Assign positions
-  let currentX = AXIS_W;
-  const groupKeys = Object.keys(timeGroups).sort();
+  const dynastyGroups = {};
+  nodes.forEach(n => {
+    if (!dynastyGroups[n.dynasty]) dynastyGroups[n.dynasty] = [];
+    dynastyGroups[n.dynasty].push(n);
+  });
   
-  groupKeys.forEach(key => {
-    const group = timeGroups[key];
-    group.forEach(n => {
-      positions[n.id] = currentX;
-      currentX += NODE_W + SIBLING_GAP;
+  // Assign each dynasty a horizontal lane
+  const laneWidth = 160; // Width of each dynasty lane
+  const dynastyLanes = {};
+  let currentX = AXIS_W;
+  
+  dynasties.forEach(dynasty => {
+    dynastyLanes[dynasty] = currentX;
+    const groupSize = dynastyGroups[dynasty]?.length || 0;
+    currentX += Math.max(laneWidth, groupSize * (NODE_W + SIBLING_GAP) + 20);
+  });
+  
+  // Within each dynasty lane, arrange nodes by family connections
+  dynasties.forEach(dynasty => {
+    const group = dynastyGroups[dynasty] || [];
+    if (group.length === 0) return;
+    
+    // Sort by time to establish a baseline order
+    const sortedByTime = [...group].sort((a, b) => {
+      const yearA = a.accessionYear || a.reignStart || a.year || 0;
+      const yearB = b.accessionYear || b.reignStart || b.year || 0;
+      return yearA - yearB;
     });
-    currentX += 15; // Extra spacing between groups
+    
+    // Assign positions within the dynasty lane
+    let laneX = dynastyLanes[dynasty];
+    sortedByTime.forEach(n => {
+      positions[n.id] = laneX;
+      laneX += NODE_W + SIBLING_GAP;
+    });
   });
   
   return positions;
