@@ -2673,16 +2673,25 @@ function getFilteredEmperors(){
   });
 }
 // emperors + (optionally) relatives/figures — used by the family-tree view
+// a "relative" = a person with a blood / marriage / adoption link (advisors,
+// generals, factions and adversaries are NOT relatives and stay out of the tree)
+const RELATIVE_IDS = new Set(DATA.people.filter(p =>
+  (p.biologicalLinks&&p.biologicalLinks.length) ||
+  (p.maritalLinks&&p.maritalLinks.length) ||
+  (p.adoptiveLinks&&p.adoptiveLinks.length)).map(p => p.id));
 function getTreeNodes(){
   let nodes = getFilteredEmperors();
-  // Always show people/relatives unless explicitly filtered by dynasty/core scope
-  const ppl = DATA.people.filter(p => {
-    if (STATE.focusDyn && p.dynasty !== STATE.focusDyn) return false;
-    if (STATE.activeDynasties.size && !STATE.activeDynasties.has(p.dynasty)) return false;
-    if (STATE.coreOnly && dyn(p.dynasty).scope !== "core") return false;
-    return true;
-  });
-  nodes = nodes.concat(ppl);
+  const showRel = STATE.showPeople && !STATE.study && !STATE.majorOnly && !STATE.favOnly;
+  if (showRel){
+    const ppl = DATA.people.filter(p => {
+      if (!RELATIVE_IDS.has(p.id)) return false;
+      if (STATE.focusDyn && p.dynasty !== STATE.focusDyn) return false;
+      if (STATE.activeDynasties.size && !STATE.activeDynasties.has(p.dynasty)) return false;
+      if (STATE.coreOnly && dyn(p.dynasty).scope !== "core") return false;
+      return true;
+    });
+    nodes = nodes.concat(ppl);
+  }
   return nodes;
 }
 
@@ -2726,28 +2735,62 @@ function renderLegend(){
    to follow one dynasty's succession; read across a row to see contemporaries.
    ============================================================================ */
 const TREE = { scale:1, tx:0, ty:0, dragging:false, lastX:0, lastY:0, positions:{} };
-const AXIS_W = 66, NODE_W = 120, NODE_H = 34, PAD_TOP = 66, PAD_BOT = 40, SIDE_PAD = 80;
-const TREE_PX_PER_YEAR = 6, MIN_STEP = 50, MAX_STEP = 124, SIBLING_GAP = 12;
-// Calculate horizontal positions using simple chronological ordering
-function calculateTreeLayout(nodes){
-  const positions = {};
-  
-  // Sort nodes by time for horizontal positioning
-  const sortedByTime = [...nodes].sort((a, b) => {
-    const yearA = a.accessionYear || a.reignStart || a.year || 0;
-    const yearB = b.accessionYear || b.reignStart || b.year || 0;
-    return yearA - yearB;
-  });
-  
-  // Assign positions in chronological order
-  let currentX = AXIS_W;
-  sortedByTime.forEach(n => {
-    positions[n.id] = currentX;
-    currentX += NODE_W + SIBLING_GAP;
-  });
-  
-  return positions;
-}
+const NODE_W = 150, NODE_H = 46, ROW_H = 110, SLOT_W = 168;
+const PAD_TOP = 30, PAD_BOT = 60, PAD_LEFT = 26, DYN_GAP = 82, ROOT_GAP = 0.5;
+// Curated parent → child genealogy (child id → [parent ids]) for the family-tree
+// layout. Only links between dataset nodes; blood preferred, with the adoptive
+// "good emperors" spine included so it reads as a tree. Not listed ⇒ dynasty root.
+const GENEALOGY = {
+  // Julio-Claudian
+  "antonia-minor":["mark-antony","octavia"], "drusus-elder":["livia"], "tiberius":["livia"],
+  "julia-elder":["augustus"], "agrippa-postumus":["marcus-agrippa","julia-elder"],
+  "agrippina-elder":["marcus-agrippa","julia-elder"], "germanicus":["drusus-elder","antonia-minor"],
+  "claudius":["drusus-elder","antonia-minor"], "caligula":["germanicus","agrippina-elder"],
+  "agrippina-younger":["germanicus","agrippina-elder"], "britannicus":["claudius","messalina"],
+  "nero":["agrippina-younger"],
+  // Flavian
+  "titus":["vespasian"], "domitian":["vespasian"],
+  // Nerva–Antonine (adoptive spine + blood)
+  "trajan":["nerva"], "hadrian":["trajan"], "antoninus-pius":["hadrian"],
+  "marcus-aurelius":["antoninus-pius"], "lucius-verus":["antoninus-pius"],
+  "faustina-younger":["antoninus-pius","faustina-elder"],
+  "commodus":["marcus-aurelius","faustina-younger"], "lucilla":["marcus-aurelius","faustina-younger"],
+  // Severan
+  "caracalla":["septimius-severus","julia-domna"], "geta":["septimius-severus","julia-domna"],
+  "julia-soaemias":["julia-maesa"], "julia-mamaea":["julia-maesa"],
+  "elagabalus":["julia-soaemias"], "severus-alexander":["julia-mamaea"],
+  // Crisis
+  "gallienus":["valerian"],
+  // Tetrarchy
+  "maxentius":["maximian"],
+  // Constantinian
+  "constantine-i":["helena"], "crispus":["constantine-i"],
+  "constantine-ii":["constantine-i","fausta"], "constans":["constantine-i","fausta"],
+  "constantius-ii":["constantine-i","fausta"],
+  // Valentinian
+  "gratian":["valentinian-i"], "valentinian-ii":["valentinian-i"],
+  // Theodosian
+  "arcadius":["theodosius-i"], "honorius":["theodosius-i"], "galla-placidia":["theodosius-i"],
+  "theodosius-ii":["arcadius"], "pulcheria":["arcadius"], "valentinian-iii":["galla-placidia"],
+};
+// structural parent links that are adoptions (drawn dashed-gold)
+const ADOPT = new Set(["trajan>nerva","hadrian>trajan","antoninus-pius>hadrian",
+  "marcus-aurelius>antoninus-pius","lucius-verus>antoninus-pius","severus-alexander>elagabalus"]);
+// notable cross-family adoptions to draw without affecting layout
+const EXTRA_ADOPT = [["tiberius","augustus"],["nero","claudius"]];
+// curated real marriages between dataset nodes (the node link arrays contain some
+// non-marriage shortcuts, so the family tree uses this clean list instead)
+const SPOUSES = [
+  ["augustus","livia"], ["marcus-agrippa","julia-elder"], ["tiberius","julia-elder"],
+  ["germanicus","agrippina-elder"], ["drusus-elder","antonia-minor"],
+  ["claudius","messalina"], ["claudius","agrippina-younger"],
+  ["domitian","domitia-longina"], ["trajan","plotina"],
+  ["antoninus-pius","faustina-elder"], ["marcus-aurelius","faustina-younger"],
+  ["lucius-verus","lucilla"], ["septimius-severus","julia-domna"],
+  ["constantine-i","fausta"], ["justinian-i","theodora"],
+];
+const spouseMap = {};
+SPOUSES.forEach(([a,b]) => { (spouseMap[a]=spouseMap[a]||[]).push(b); (spouseMap[b]=spouseMap[b]||[]).push(a); });
 
 function buildEdges(visibleIds){
   const seen = new Set(), edges = [];
@@ -2781,202 +2824,202 @@ const EDGE_STYLE = {
 
 function renderTree(){
   const svg = $("#treeSvg");
-  const filtered = chronoSort(getTreeNodes());
-  const visibleIds = new Set(filtered.map(e => e.id));
-  if (!filtered.length){
+  const nodes = getTreeNodes();
+  if (!nodes.length){
     svg.innerHTML = ""; svg.setAttribute("width", 10); svg.setAttribute("height", 10);
-    renderStacked(filtered); return;
+    updateTreeLegend(); renderStacked(nodes); return;
+  }
+  const idSet = new Set(nodes.map(n => n.id));
+  const has = id => idSet.has(id);
+  const yr = n => isPerson(n) ? (n.year ?? 0) : (n.accessionYear ?? n.reignStart ?? 0);
+
+  // ---- structural parent (blood/adopt) within visible set; married-in falls back to spouse's parent ----
+  const struct = {}, marriedIn = {};
+  nodes.forEach(n => {
+    const g = (GENEALOGY[n.id]||[]).filter(has);
+    if (g.length){ struct[n.id] = g[0]; return; }
+    let a = null;
+    (spouseMap[n.id]||[]).filter(has).forEach(s => {
+      if (a) return;
+      const gs = (GENEALOGY[s]||[]).filter(has);
+      if (gs.length){ a = gs[0]; marriedIn[n.id] = s; }
+    });
+    struct[n.id] = a;
+  });
+  const kids = {};
+  nodes.forEach(n => { const p = struct[n.id]; if (p){ (kids[p]=kids[p]||[]).push(n.id); } });
+  // order children so a married-in spouse sits immediately beside its partner
+  const okey = id => marriedIn[id] ? (yr(byId(marriedIn[id]))+0.5) : yr(byId(id));
+  const ord = (a,b) => okey(a) - okey(b);
+  Object.values(kids).forEach(a => a.sort(ord));
+
+  // ---- generation depth: child below its structural parent, spouses on the same row ----
+  const dep = {}; nodes.forEach(n => dep[n.id] = 0);
+  for (let it=0; it<nodes.length+2; it++){
+    let changed = false;
+    nodes.forEach(n => { const p = struct[n.id]; if (p!=null && dep[n.id] < dep[p]+1){ dep[n.id]=dep[p]+1; changed=true; } });
+    nodes.forEach(n => (spouseMap[n.id]||[]).filter(has).forEach(s => {
+      const m = Math.max(dep[n.id], dep[s]); if (dep[n.id]!==m || dep[s]!==m){ dep[n.id]=m; dep[s]=m; changed=true; }
+    }));
+    if (!changed) break;
   }
 
-  // ---- Y: time flows downward, compressed-proportional ----
-  const yearOf = n => isPerson(n) ? (n.year ?? 0) : (n.accessionYear ?? n.reignStart ?? 0);
-  const uniqueYears = [...new Set(filtered.map(yearOf))].sort((a,b)=>a-b);
-  const baseY = {}; let acc = PAD_TOP;
-  uniqueYears.forEach((y,i) => {
-    if (i>0){ const gap = y - uniqueYears[i-1]; acc += Math.min(MAX_STEP, Math.max(MIN_STEP, gap*TREE_PX_PER_YEAR)); }
-    baseY[y] = acc;
+  // ---- X: tidy postorder layout per dynasty (parents centered over children) ----
+  const lanesUsed = DATA.dynasties.filter(d => nodes.some(n => n.dynasty === d.key));
+  const slot = {}, dynW = {};
+  lanesUsed.forEach(d => {
+    let cur = 0;
+    const place = id => {
+      const ks = (kids[id]||[]).filter(c => byId(c).dynasty === d.key);
+      if (!ks.length){ slot[id] = cur; cur += 1; }
+      else { ks.forEach(place); slot[id] = (slot[ks[0]] + slot[ks[ks.length-1]]) / 2; }
+    };
+    const rts = nodes.filter(n => n.dynasty===d.key && (!struct[n.id] || byId(struct[n.id]).dynasty!==d.key)).map(n=>n.id).sort(ord);
+    rts.forEach(r => { place(r); cur += ROOT_GAP; });
+    dynW[d.key] = Math.max(1, cur);
+  });
+  const maxW = Math.max(...lanesUsed.map(d => dynW[d.key]));
+
+  // ---- Y: each dynasty is a stacked block of generation rows ----
+  const dynTop = {}; let yAcc = PAD_TOP + 26;
+  lanesUsed.forEach(d => {
+    dynTop[d.key] = yAcc;
+    const mem = nodes.filter(n => n.dynasty === d.key);
+    const md = Math.max(0, ...mem.map(n => dep[n.id]));
+    yAcc = dynTop[d.key] + md*ROW_H + NODE_H + DYN_GAP;
   });
 
-  // ---- X: horizontal layout grouped by dynasty and time ----
-  const treeX = calculateTreeLayout(filtered);
-
-  // ---- combine positions ----
   const positions = {};
-  filtered.forEach(e => {
-    const x = treeX[e.id] ?? SIDE_PAD;
-    const y = baseY[yearOf(e)];
-    positions[e.id] = {x: x, y: y, cx: x + NODE_W/2, cy: y + NODE_H/2, e};
+  nodes.forEach(n => {
+    const off = (maxW - dynW[n.dynasty]) / 2;        // center each dynasty
+    const cx = PAD_LEFT + (off + (slot[n.id]??0) + 0.5) * SLOT_W;
+    const ty = dynTop[n.dynasty] + dep[n.id]*ROW_H;
+    positions[n.id] = { x: cx - NODE_W/2, y: ty, cx, cy: ty + NODE_H/2 };
   });
   TREE.positions = positions;
 
-  const minX = Math.min(...Object.values(positions).map(p => p.x));
-  const maxX = Math.max(...Object.values(positions).map(p => p.x + NODE_W));
-  const minY = Math.min(...Object.values(positions).map(p => p.y));
-  const maxY = Math.max(...Object.values(positions).map(p => p.y + NODE_H));
-  
-  const width = Math.max(maxX + 40, 800);
-  const height = Math.max(maxY + 40, 400);
+  const width  = PAD_LEFT*2 + maxW*SLOT_W;
+  const height = yAcc + PAD_BOT;
   svg.setAttribute("width", width);
   svg.setAttribute("height", height);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
-  // ---- dynasty time bands (horizontal bands showing when each dynasty ruled) ----
+  // ---- dynasty time-bands (the period each dynasty ruled) ----
   let bandSvg = "";
-  DATA.dynasties.forEach(d => {
-    // Find the year range for this dynasty among visible emperors
-    const dynastyEmperors = filtered.filter(e => e.dynasty === d.key && !isPerson(e));
-    if (dynastyEmperors.length === 0) return;
-    
-    const years = dynastyEmperors.map(e => [e.reignStart, e.reignEnd]).flat();
-    const minYear = Math.min(...years);
-    const maxYear = Math.max(...years);
-    
-    if (minYear in baseY && maxYear in baseY) {
-      const yTop = baseY[minYear] - 8;
-      const yBottom = baseY[maxYear] + NODE_H + 8;
-      const bandHeight = yBottom - yTop;
-      
-      bandSvg += `<rect x="${AXIS_W}" y="${yTop}" width="${width-AXIS_W-8}" height="${bandHeight}" 
-        fill="${d.color}" fill-opacity="0.08"/>
-        <text x="${width-12}" y="${yTop+14}" text-anchor="end" font-size="11" font-weight="700" fill="${d.color}" 
-        opacity="0.9">${esc(d.label)} · ${fmtYear(minYear)}–${fmtYear(maxYear)}</text>
-        <line x1="${AXIS_W}" y1="${yTop}" x2="${width-8}" y2="${yTop}" stroke="${d.color}" stroke-opacity="0.25" stroke-width="1"/>
-        <line x1="${AXIS_W}" y1="${yBottom}" x2="${width-8}" y2="${yBottom}" stroke="${d.color}" stroke-opacity="0.25" stroke-width="1"/>`;
-    }
+  lanesUsed.forEach(d => {
+    const mem = nodes.filter(n => n.dynasty === d.key);
+    const emp = mem.filter(n => !isPerson(n));
+    const top = Math.min(...mem.map(n => positions[n.id].y)) - 14;
+    const bot = Math.max(...mem.map(n => positions[n.id].y + NODE_H)) + 12;
+    const rs = emp.length ? Math.min(...emp.map(e=>e.reignStart)) : null;
+    const re = emp.length ? Math.max(...emp.map(e=>e.reignEnd)) : null;
+    const yrs = rs!=null ? ` · ${fmtYear(rs)}–${fmtYear(re)}` : "";
+    bandSvg += `<rect x="6" y="${top}" width="${width-12}" height="${bot-top}" rx="12" fill="${d.color}" fill-opacity="0.06" stroke="${d.color}" stroke-opacity="0.22"/>
+      <text x="16" y="${top+17}" font-size="12.5" font-weight="700" fill="${d.color}">${esc(d.label)}${esc(yrs)}</text>`;
   });
 
-  // ---- left time axis: gridlines + year labels ----
-  let axisSvg = `<line x1="${AXIS_W-1}" y1="${PAD_TOP-34}" x2="${AXIS_W-1}" y2="${height-6}" stroke="var(--line-strong)"/>
-    <text x="${AXIS_W-8}" y="${PAD_TOP-42}" text-anchor="end" font-size="10" font-weight="700" fill="var(--ink-faint)">YEAR</text>`;
-  let lastLabelY = -999;
-  uniqueYears.forEach(y => {
-    const yy = baseY[y] + NODE_H/2;
-    if (yy - lastLabelY >= 24){
-      axisSvg += `<line x1="${AXIS_W-1}" y1="${yy}" x2="${width-8}" y2="${yy}" stroke="var(--line)" stroke-opacity="0.45"/>
-        <text x="${AXIS_W-8}" y="${yy+3}" text-anchor="end" font-size="10" fill="var(--ink-faint)">${esc(fmtYear(y))}</text>`;
-      lastLabelY = yy;
-    }
-  });
-
-  // ---- edges (curved paths for family relationships) ----
-  const edges = STATE.study ? buildEdges(visibleIds).filter(e => e.type === "succ" || e.type === "co")
-                            : buildEdges(visibleIds);
-  let edgeSvg = "";
-  edges.forEach(({a,b,type}) => {
-    const pa = positions[a], pb = positions[b]; if (!pa || !pb) return;
-    const st = EDGE_STYLE[type];
-    const x1 = pa.cx, y1 = pa.cy, x2 = pb.cx, y2 = pb.cy;
-    // Use S-curve for horizontal tree layout
-    const mx = (x1 + x2) / 2;
-    const d = `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
-    edgeSvg += `<path class="edge" d="${d}" stroke="${st.color}" stroke-width="${st.w}"
-      ${st.dash?`stroke-dasharray="${st.dash}"`:""} ${st.arrow?'marker-end="url(#arrow)"':""}/>`;
-  });
-
-  // ---- horizontal scope divider between core (≤ Constantine) and later emperors ----
+  // ---- scope divider between core (≤ Constantine) and later ----
   let scopeSvg = "";
-  const constantine = byId("constantine");
-  if (constantine && positions[constantine.id]) {
-    const yLine = positions[constantine.id].y + NODE_H + 14;
+  const coreB = nodes.filter(n => n.scopeTier === "core").map(n => positions[n.id].y + NODE_H);
+  const later = nodes.filter(n => isPerson(n) ? dyn(n.dynasty).scope !== "core" : n.scopeTier !== "core");
+  if (coreB.length && later.length){
+    const yLine = Math.max(...coreB) + DYN_GAP/2;
     scopeSvg = `<g class="scopeband">
-      <line x1="${AXIS_W-1}" y1="${yLine}" x2="${width-8}" y2="${yLine}" stroke="var(--core)" stroke-width="2" stroke-dasharray="4 5"/>
-      <rect x="${AXIS_W+6}" y="${yLine-10}" width="340" height="20" rx="5" fill="var(--bg-panel)" stroke="var(--core)"/>
-      <text x="${AXIS_W+14}" y="${yLine+4}" font-size="11" font-weight="700" fill="var(--core)">▼ End of core NJCL scope (Constantine the Great)</text>
+      <line x1="6" y1="${yLine}" x2="${width-6}" y2="${yLine}" stroke="var(--core)" stroke-width="2" stroke-dasharray="4 5"/>
+      <rect x="16" y="${yLine-11}" width="332" height="22" rx="6" fill="var(--bg-panel)" stroke="var(--core)"/>
+      <text x="24" y="${yLine+4}" font-size="11" font-weight="700" fill="var(--core)">▼ End of core NJCL scope (Constantine the Great)</text>
     </g>`;
   }
 
-  // ---- nodes — emperors as solid rects; people (relatives/figures) as dashed ovals ----
+  // ---- connectors: orthogonal parent→child elbows + spouse lines ----
+  let edgeSvg = "";
+  const elbow = (px,pB,cx,cT,busY,color,dash) =>
+    `<path class="edge" fill="none" stroke="${color}" stroke-width="2" ${dash?`stroke-dasharray="${dash}"`:""} d="M ${px} ${pB} V ${busY} H ${cx} V ${cT}"/>`;
+  nodes.forEach(n => {
+    const ps = (GENEALOGY[n.id]||[]).filter(p => positions[p]);
+    if (!ps.length) return;
+    const px = ps.reduce((s,p)=>s+positions[p].cx,0)/ps.length;
+    const pB = Math.max(...ps.map(p => positions[p].y + NODE_H));
+    const c = positions[n.id];
+    const busY = (pB + c.y) / 2;
+    const adopt = ps.some(p => ADOPT.has(`${n.id}>${p}`));
+    edgeSvg += elbow(px, pB, c.cx, c.y, busY, adopt?"#c79a2e":"#2e8b57", adopt?"6 4":"");
+  });
+  EXTRA_ADOPT.forEach(([ci,pi]) => {
+    if (!positions[ci] || !positions[pi]) return;
+    const p = positions[pi], c = positions[ci];
+    const pB = p.y + NODE_H, busY = (pB + c.y) / 2;
+    edgeSvg += elbow(p.cx, pB, c.cx, c.y, busY, "#c79a2e", "6 4");
+  });
+  const mseen = new Set();
+  nodes.forEach(n => (spouseMap[n.id]||[]).filter(has).forEach(s => {
+    const k = [n.id,s].sort().join("|"); if (mseen.has(k)) return; mseen.add(k);
+    const a = positions[n.id], b = positions[s]; if (!a||!b) return;
+    const x1 = a.cx < b.cx ? a.x+NODE_W : a.x;
+    const x2 = a.cx < b.cx ? b.x : b.x+NODE_W;
+    edgeSvg += `<path class="edge" fill="none" stroke="#5a6fb0" stroke-width="1.8" stroke-dasharray="2 3" d="M ${x1} ${a.cy} L ${x2} ${b.cy}"/>`;
+  }));
+
+  // ---- nodes — emperors as solid rects, relatives as dashed ovals ----
   let nodeSvg = "";
-  filtered.forEach(e => {
-    const p = positions[e.id]; const d = dyn(e.dynasty);
-    const fav = STATE.favorites.has(e.id);
-    if (isPerson(e)){
-      nodeSvg += `<g class="node person" data-id="${e.id}" tabindex="0" role="button"
-          aria-label="${esc(e.displayName)} (relative/figure), ${esc(d.label)}">
-        <rect x="${p.x}" y="${p.y}" width="${NODE_W}" height="${NODE_H}" rx="${NODE_H/2}"
-          fill="var(--bg-panel)" stroke="${d.color}" stroke-width="1.6" stroke-dasharray="4 3"/>
-        <text class="nname" x="${p.x+8}" y="${p.y+14}" fill="${d.color}" font-style="italic" font-size="11">${esc(e.displayName).slice(0,18)}</text>
-        <text class="ndate" x="${p.x+8}" y="${p.y+26}" fill="var(--ink-faint)" font-size="8.5">${esc(e.role||"").slice(0,24)}</text>
+  nodes.forEach(n => {
+    const p = positions[n.id]; const d = dyn(n.dynasty);
+    const fav = STATE.favorites.has(n.id); const mid = p.x + NODE_W/2;
+    if (isPerson(n)){
+      nodeSvg += `<g class="node person" data-id="${n.id}" tabindex="0" role="button" aria-label="${esc(n.displayName)} (relative), ${esc(d.label)}">
+        <rect x="${p.x}" y="${p.y}" width="${NODE_W}" height="${NODE_H}" rx="${NODE_H/2}" fill="var(--bg-panel)" stroke="${d.color}" stroke-width="1.6" stroke-dasharray="4 3"/>
+        <text class="nname" x="${mid}" y="${p.y+19}" text-anchor="middle" fill="${d.color}" font-style="italic" font-size="12.5">${esc(n.displayName).slice(0,20)}</text>
+        <text class="ndate" x="${mid}" y="${p.y+34}" text-anchor="middle" fill="var(--ink-faint)" font-size="9.5">${esc(n.role||"").slice(0,28)}</text>
       </g>`;
       return;
     }
-    const dashCore = e.scopeTier === "core" ? "" : `stroke-dasharray="${e.scopeTier==='extension'?'5 3':'2 3'}"`;
-    nodeSvg += `<g class="node ${e.isMajor?'major':''} ${fav?'fav':''}" data-id="${e.id}" tabindex="0" role="button"
-        aria-label="${esc(e.displayName)}, ${esc(d.label)}">
-      <rect x="${p.x}" y="${p.y}" width="${NODE_W}" height="${NODE_H}" rx="8"
-        fill="${d.color}" fill-opacity="${e.isMajor?0.95:0.78}" stroke="${d.color}" ${dashCore}/>
-      <text class="nname" x="${p.x+7}" y="${p.y+15}" fill="#fff">${esc(e.displayName).slice(0,16)}</text>
-      <text class="ndate" x="${p.x+7}" y="${p.y+27}" fill="#fff">${fmtYear(e.reignStart)}–${fmtYear(e.reignEnd)}</text>
-      ${isNjclImportant(e)?`<text x="${p.x+NODE_W-7}" y="${p.y+14}" text-anchor="end" font-size="10" fill="#ffe9a8">★</text>`:""}
-      <text class="favmark" x="${p.x+NODE_W-7}" y="${p.y+27}" text-anchor="end" font-size="10" fill="#ffd0d8">♥</text>
+    const dc = n.scopeTier === "core" ? "" : `stroke-dasharray="${n.scopeTier==='extension'?'5 3':'2 3'}"`;
+    nodeSvg += `<g class="node ${n.isMajor?'major':''} ${fav?'fav':''}" data-id="${n.id}" tabindex="0" role="button" aria-label="${esc(n.displayName)}, ${esc(d.label)}">
+      <rect x="${p.x}" y="${p.y}" width="${NODE_W}" height="${NODE_H}" rx="8" fill="${d.color}" fill-opacity="${n.isMajor?0.96:0.8}" stroke="${d.color}" ${dc}/>
+      <text class="nname" x="${mid}" y="${p.y+19}" text-anchor="middle" fill="#fff" font-size="13">${esc(n.displayName).slice(0,20)}</text>
+      <text class="ndate" x="${mid}" y="${p.y+34}" text-anchor="middle" fill="#fff" font-size="10" opacity="0.9">${fmtYear(n.reignStart)}–${fmtYear(n.reignEnd)}</text>
+      ${isNjclImportant(n)?`<text x="${p.x+NODE_W-7}" y="${p.y+13}" text-anchor="end" font-size="11" fill="#ffe9a8">★</text>`:""}
+      ${fav?`<text x="${p.x+7}" y="${p.y+13}" font-size="11" fill="#ffd0d8">♥</text>`:""}
     </g>`;
   });
 
-  svg.innerHTML = `<defs>
-      <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
-        <path d="M0,0 L7,3 L0,6 Z" fill="var(--ink-faint)"/>
-      </marker>
-    </defs>${bandSvg}${axisSvg}${edgeSvg}${scopeSvg}${nodeSvg}`;
-
+  svg.innerHTML = `${bandSvg}${scopeSvg}${edgeSvg}${nodeSvg}`;
   applyTreeTransform();
-  
-  // Update the legend div with relationship line types
-  const legendDiv = $("#legend");
-  legendDiv.innerHTML = `<div class="grp">
-    <span class="control-label">Relationship Lines</span>
-    <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:6px;">
-      <div style="display:flex;align-items:center;gap:6px;">
-        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="var(--ink-faint)" stroke-width="1.6"/></svg>
-        <span style="font-size:11px;color:var(--ink-soft)">Succession</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#2e8b57" stroke-width="2.4"/></svg>
-        <span style="font-size:11px;color:var(--ink-soft)">Biological</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#c79a2e" stroke-width="2.2" stroke-dasharray="6 4"/></svg>
-        <span style="font-size:11px;color:var(--ink-soft)">Adoptive</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#5a6fb0" stroke-width="2" stroke-dasharray="2 4"/></svg>
-        <span style="font-size:11px;color:var(--ink-soft)">Marriage</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#b0506a" stroke-width="2" stroke-dasharray="1 5"/></svg>
-        <span style="font-size:11px;color:var(--ink-soft)">Co-emperor</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#8a8580" stroke-width="1.4" stroke-dasharray="3 5"/></svg>
-        <span style="font-size:11px;color:var(--ink-soft)">Associate/Advisor</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#b23b3b" stroke-width="2" stroke-dasharray="7 4"/></svg>
-        <span style="font-size:11px;color:var(--ink-soft)">Faction/Military</span>
-      </div>
-    </div>
-  </div>`;
-  
-  // wire node clicks
-  $$(".node", svg).forEach(n => {
-    n.addEventListener("click", () => openPanel(n.dataset.id));
-    n.addEventListener("keydown", ev => { if (ev.key==="Enter"||ev.key===" "){ ev.preventDefault(); openPanel(n.dataset.id);} });
-    n.addEventListener("mouseenter", ev => showNodeTip(ev, byId(n.dataset.id)));
-    n.addEventListener("mousemove", moveTip);
-    n.addEventListener("mouseleave", hideTip);
+  updateTreeLegend();
+  $$(".node", svg).forEach(nd => {
+    nd.addEventListener("click", () => openPanel(nd.dataset.id));
+    nd.addEventListener("keydown", ev => { if (ev.key==="Enter"||ev.key===" "){ ev.preventDefault(); openPanel(nd.dataset.id);} });
+    nd.addEventListener("mouseenter", ev => showNodeTip(ev, byId(nd.dataset.id)));
+    nd.addEventListener("mousemove", moveTip);
+    nd.addEventListener("mouseleave", hideTip);
   });
-
-  renderStacked(filtered);
+  renderStacked(nodes);
+}
+function updateTreeLegend(){
+  const el = $("#legend"); if (!el) return;
+  const line = (c,d) => `<svg width="26" height="12"><line x1="2" y1="6" x2="24" y2="6" stroke="${c}" stroke-width="2.2" ${d?`stroke-dasharray="${d}"`:""}/></svg>`;
+  el.innerHTML = `<div class="grp">
+      <span class="control-label">Family tree</span>
+      <span class="li">${line("#2e8b57")} Parent → child</span>
+      <span class="li">${line("#c79a2e","6 4")} Adoption</span>
+      <span class="li">${line("#5a6fb0","2 3")} Marriage</span>
+      <span class="li"><svg width="26" height="14"><rect x="1" y="2" width="24" height="10" rx="2" fill="var(--accent)"/></svg> Emperor</span>
+      <span class="li"><svg width="26" height="14"><rect x="1" y="2" width="24" height="10" rx="5" fill="var(--bg-panel)" stroke="var(--accent)" stroke-dasharray="3 2"/></svg> Relative</span>
+    </div>
+    <span class="sep"></span>
+    <div class="grp"><span class="li muted">Generations run top → bottom; dynasties are stacked time-bands labelled with the years they ruled. Succession, co-rule &amp; advisor links are listed inside each emperor's profile.</span></div>`;
 }
 function applyTreeTransform(){
   $("#treeSvg").style.transform = `translate(${TREE.tx}px,${TREE.ty}px) scale(${TREE.scale})`;
 }
+const TREE_MIN_SCALE = 0.62, TREE_MAX_SCALE = 1.4;
 function fitTree(){
-  // Vertical-time layout: fit to WIDTH so every dynasty column is visible at once;
-  // the user scrolls/pans DOWN through the centuries.
+  // Family tree: fit to WIDTH so the whole generation is visible; the user scrolls
+  // DOWN through the dynasties. Zoom is clamped so it can't shrink into confusion.
   const stage = $("#treeStage"), svg = $("#treeSvg");
   const w = parseFloat(svg.getAttribute("width")) || 1;
   const sw = stage.clientWidth;
-  TREE.scale = Math.max(0.4, Math.min(1.0, (sw - 12) / w));
+  TREE.scale = Math.max(TREE_MIN_SCALE, Math.min(1.0, (sw - 12) / w));
   TREE.tx = Math.max(0, (sw - w*TREE.scale)/2);
   TREE.ty = 8;
   applyTreeTransform();
@@ -3613,15 +3656,15 @@ function wire(){
 
   // tree zoom/pan
   const stage = $("#treeStage"), svg = $("#treeSvg");
-  $("#zoomIn").addEventListener("click", () => { TREE.scale = Math.min(2.4, TREE.scale*1.2); applyTreeTransform(); });
-  $("#zoomOut").addEventListener("click", () => { TREE.scale = Math.max(0.25, TREE.scale/1.2); applyTreeTransform(); });
+  $("#zoomIn").addEventListener("click", () => { TREE.scale = Math.min(TREE_MAX_SCALE, TREE.scale*1.15); applyTreeTransform(); });
+  $("#zoomOut").addEventListener("click", () => { TREE.scale = Math.max(TREE_MIN_SCALE, TREE.scale/1.15); applyTreeTransform(); });
   $("#zoomFit").addEventListener("click", fitTree);
   stage.addEventListener("wheel", e => {
     e.preventDefault();
     const rect = stage.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
     const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
-    const ns = Math.min(2.4, Math.max(0.25, TREE.scale * factor));
+    const ns = Math.min(TREE_MAX_SCALE, Math.max(TREE_MIN_SCALE, TREE.scale * factor));
     // zoom toward cursor
     TREE.tx = mx - (mx - TREE.tx) * (ns/TREE.scale);
     TREE.ty = my - (my - TREE.ty) * (ns/TREE.scale);
