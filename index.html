@@ -2675,16 +2675,14 @@ function getFilteredEmperors(){
 // emperors + (optionally) relatives/figures — used by the family-tree view
 function getTreeNodes(){
   let nodes = getFilteredEmperors();
-  const showPeople = STATE.showPeople && !STATE.study && !STATE.majorOnly && !STATE.favOnly;
-  if (showPeople){
-    const ppl = DATA.people.filter(p => {
-      if (STATE.focusDyn && p.dynasty !== STATE.focusDyn) return false;
-      if (STATE.activeDynasties.size && !STATE.activeDynasties.has(p.dynasty)) return false;
-      if (STATE.coreOnly && dyn(p.dynasty).scope !== "core") return false;
-      return true;
-    });
-    nodes = nodes.concat(ppl);
-  }
+  // Always show people/relatives unless explicitly filtered by dynasty/core scope
+  const ppl = DATA.people.filter(p => {
+    if (STATE.focusDyn && p.dynasty !== STATE.focusDyn) return false;
+    if (STATE.activeDynasties.size && !STATE.activeDynasties.has(p.dynasty)) return false;
+    if (STATE.coreOnly && dyn(p.dynasty).scope !== "core") return false;
+    return true;
+  });
+  nodes = nodes.concat(ppl);
   return nodes;
 }
 
@@ -2730,34 +2728,22 @@ function renderLegend(){
 const TREE = { scale:1, tx:0, ty:0, dragging:false, lastX:0, lastY:0, positions:{} };
 const AXIS_W = 66, NODE_W = 120, NODE_H = 34, PAD_TOP = 66, PAD_BOT = 40, SIDE_PAD = 80;
 const TREE_PX_PER_YEAR = 6, MIN_STEP = 50, MAX_STEP = 124, SIBLING_GAP = 12;
-// Calculate horizontal positions using a simple time-grouped layout
+// Calculate horizontal positions using simple chronological ordering
 function calculateTreeLayout(nodes){
   const positions = {};
   
-  // Group nodes by dynasty for horizontal grouping
-  const dynasties = [...new Set(nodes.map(n => n.dynasty))];
-  const dynastyIndex = Object.fromEntries(dynasties.map((d, i) => [d, i]));
-  
-  // Within each dynasty group by time period to avoid overcrowding
-  const timeGroups = {};
-  nodes.forEach(n => {
-    const period = Math.floor((n.accessionYear || n.reignStart || n.year || 0) / 25) * 25; // 25-year buckets
-    const key = `${n.dynasty}-${period}`;
-    if (!timeGroups[key]) timeGroups[key] = [];
-    timeGroups[key].push(n);
+  // Sort nodes by time for horizontal positioning
+  const sortedByTime = [...nodes].sort((a, b) => {
+    const yearA = a.accessionYear || a.reignStart || a.year || 0;
+    const yearB = b.accessionYear || b.reignStart || b.year || 0;
+    return yearA - yearB;
   });
   
-  // Assign positions
+  // Assign positions in chronological order
   let currentX = AXIS_W;
-  const groupKeys = Object.keys(timeGroups).sort();
-  
-  groupKeys.forEach(key => {
-    const group = timeGroups[key];
-    group.forEach(n => {
-      positions[n.id] = currentX;
-      currentX += NODE_W + SIBLING_GAP;
-    });
-    currentX += 15; // Extra spacing between groups
+  sortedByTime.forEach(n => {
+    positions[n.id] = currentX;
+    currentX += NODE_W + SIBLING_GAP;
   });
   
   return positions;
@@ -2823,10 +2809,13 @@ function renderTree(){
   });
   TREE.positions = positions;
 
+  const minX = Math.min(...Object.values(positions).map(p => p.x));
   const maxX = Math.max(...Object.values(positions).map(p => p.x + NODE_W));
-  const maxBottom = Math.max(...Object.values(positions).map(p => p.y + NODE_H));
-  const width = Math.max(AXIS_W + maxX + SIDE_PAD, 800);
-  const height = maxBottom + PAD_BOT;
+  const minY = Math.min(...Object.values(positions).map(p => p.y));
+  const maxY = Math.max(...Object.values(positions).map(p => p.y + NODE_H));
+  
+  const width = Math.max(maxX + 40, 800);
+  const height = Math.max(maxY + 40, 400);
   svg.setAttribute("width", width);
   svg.setAttribute("height", height);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -2884,28 +2873,6 @@ function renderTree(){
       ${st.dash?`stroke-dasharray="${st.dash}"`:""} ${st.arrow?'marker-end="url(#arrow)"':""}/>`;
   });
 
-  // ---- edge legend ----
-  const legendItems = [
-    { type: "succ", label: "Succession", color: "var(--ink-faint)" },
-    { type: "bio", label: "Biological", color: "#2e8b57" },
-    { type: "adopt", label: "Adoptive", color: "#c79a2e" },
-    { type: "marry", label: "Marriage", color: "#5a6fb0" },
-    { type: "co", label: "Co-emperor", color: "#b0506a" },
-    { type: "assoc", label: "Associate/Advisor", color: "#8a8580" },
-    { type: "power", label: "Faction/Military", color: "#b23b3b" }
-  ];
-  let legendSvg = `<g transform="translate(${AXIS_W + 10}, ${PAD_TOP - 24})">
-    <rect x="-6" y="-12" width="280" height="106" rx="6" fill="var(--bg-panel)" stroke="var(--line-strong)" stroke-width="1" opacity="0.95"/>
-    <text x="0" y="0" font-size="10" font-weight="700" fill="var(--ink-soft)">RELATIONSHIP LINES</text>`;
-  legendItems.forEach((item, i) => {
-    const st = EDGE_STYLE[item.type];
-    const y = 14 + i * 13;
-    legendSvg += `<line x1="0" y1="${y}" x2="24" y2="${y}" stroke="${st.color}" stroke-width="${st.w}" 
-      ${st.dash?`stroke-dasharray="${st.dash}"`:""} ${item.type==='succ'?'marker-end="url(#arrow)"':""}/>
-    <text x="32" y="${y+3}" font-size="9" fill="var(--ink-soft)">${item.label}</text>`;
-  });
-  legendSvg += `</g>`;
-
   // ---- horizontal scope divider between core (≤ Constantine) and later emperors ----
   let scopeSvg = "";
   const constantine = byId("constantine");
@@ -2949,9 +2916,46 @@ function renderTree(){
       <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
         <path d="M0,0 L7,3 L0,6 Z" fill="var(--ink-faint)"/>
       </marker>
-    </defs>${bandSvg}${axisSvg}${legendSvg}${edgeSvg}${scopeSvg}${nodeSvg}`;
+    </defs>${bandSvg}${axisSvg}${edgeSvg}${scopeSvg}${nodeSvg}`;
 
   applyTreeTransform();
+  
+  // Update the legend div with relationship line types
+  const legendDiv = $("#legend");
+  legendDiv.innerHTML = `<div class="grp">
+    <span class="control-label">Relationship Lines</span>
+    <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:6px;">
+      <div style="display:flex;align-items:center;gap:6px;">
+        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="var(--ink-faint)" stroke-width="1.6"/></svg>
+        <span style="font-size:11px;color:var(--ink-soft)">Succession</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#2e8b57" stroke-width="2.4"/></svg>
+        <span style="font-size:11px;color:var(--ink-soft)">Biological</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#c79a2e" stroke-width="2.2" stroke-dasharray="6 4"/></svg>
+        <span style="font-size:11px;color:var(--ink-soft)">Adoptive</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#5a6fb0" stroke-width="2" stroke-dasharray="2 4"/></svg>
+        <span style="font-size:11px;color:var(--ink-soft)">Marriage</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#b0506a" stroke-width="2" stroke-dasharray="1 5"/></svg>
+        <span style="font-size:11px;color:var(--ink-soft)">Co-emperor</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#8a8580" stroke-width="1.4" stroke-dasharray="3 5"/></svg>
+        <span style="font-size:11px;color:var(--ink-soft)">Associate/Advisor</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#b23b3b" stroke-width="2" stroke-dasharray="7 4"/></svg>
+        <span style="font-size:11px;color:var(--ink-soft)">Faction/Military</span>
+      </div>
+    </div>
+  </div>`;
+  
   // wire node clicks
   $$(".node", svg).forEach(n => {
     n.addEventListener("click", () => openPanel(n.dataset.id));
