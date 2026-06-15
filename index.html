@@ -3202,8 +3202,12 @@ function renderCram(){
    5f. RENDER — COMPARE
    ============================================================================ */
 function populateCompareSelects(){
-  const opts = chronoSort(DATA.emperors).map(e =>
-    `<option value="${e.id}">${esc(e.displayName)} (${fmtYear(e.reignStart)})</option>`).join("");
+  // Combine emperors and people for comparison
+  const emperorOpts = chronoSort(DATA.emperors).map(e =>
+    `<option value="${e.id}">${esc(e.displayName)} (${fmtYear(e.reignStart)})</option>`);
+  const peopleOpts = DATA.people.sort((a,b) => (a.year||0) - (b.year||0)).map(p =>
+    `<option value="${p.id}">${esc(p.displayName)} (${fmtYear(p.year)})</option>`);
+  const opts = [...emperorOpts, ...peopleOpts].join("");
   $("#cmpA").innerHTML = opts; $("#cmpB").innerHTML = opts;
   $("#cmpA").value = "augustus"; $("#cmpB").value = "constantine-i";
 }
@@ -3219,39 +3223,87 @@ function val(e, key){
 function renderCompare(){
   const a = byId($("#cmpA").value), b = byId($("#cmpB").value);
   if (!a || !b){ $("#cmpOut").innerHTML = ""; return; }
+  
+  const isEmperor = e => e.kind === "emperor";
+  const isPerson = e => e.kind === "person";
+  
   const head = e => {
-    const d = dyn(e.dynasty), sm = scopeMeta(e);
+    const d = dyn(e.dynasty);
+    let badge = "";
+    let subtitle = "";
+    
+    if (isEmperor(e)) {
+      const sm = scopeMeta(e);
+      badge = `<span class="badge ${sm.cls}">${sm.label}</span>`;
+      subtitle = `<p><strong>${fmtReign(e)}</strong> · ${esc(d.label)} · ${esc(e.region)}</p>`;
+    } else {
+      badge = `<span class="badge" style="background:var(--line-strong);color:var(--ink)">Figure</span>`;
+      subtitle = `<p><strong>${e.role || ""}</strong> · ${esc(d.label)} · ${fmtYear(e.year)}</p>`;
+    }
+    
     return `<div class="card" style="border-top:5px solid ${d.color}">
-      <h3>${esc(e.displayName)} <span class="badge ${sm.cls}">${sm.label}</span></h3>
+      <h3>${esc(e.displayName)} ${badge}</h3>
       <p class="muted" style="font-style:italic">${esc(e.fullName)}</p>
-      <p><strong>${fmtReign(e)}</strong> · ${esc(d.label)} · ${esc(e.region)}</p>
+      ${subtitle}
     </div>`;
   };
-  const fields = [
-    ["Reign", fmtReign(a), fmtReign(b)],
-    ["Dynasty", esc(dyn(a.dynasty).label), esc(dyn(b.dynasty).label)],
-    ["Region", val(a,"region"), val(b,"region")],
-    ["Age at accession / death", `${a.ageAccession??"?"} / ${a.ageDeath??"?"}`, `${b.ageAccession??"?"} / ${b.ageDeath??"?"}`],
-    ["Predecessor", a.predecessor?esc(byId(a.predecessor)?.displayName||a.predecessor):"—", b.predecessor?esc(byId(b.predecessor)?.displayName||b.predecessor):"—"],
-    ["Successor", a.successor?esc(byId(a.successor)?.displayName||a.successor):"—", b.successor?esc(byId(b.successor)?.displayName||b.successor):"—"],
-    ["Succession type", val(a,"successionType"), val(b,"successionType")],
-    ["Accession", val(a,"accessionMethod"), val(b,"accessionMethod")],
-    ["Death", val(a,"deathMethod"), val(b,"deathMethod")],
-    ["Father / Mother", `${val(a,"father")} / ${val(a,"mother")}`, `${val(b,"father")} / ${val(b,"mother")}`],
-    ["Spouses", val(a,"spouses"), val(b,"spouses")],
-    ["Children", val(a,"children"), val(b,"children")],
-    ["Key events", val(a,"keyEvents"), val(b,"keyEvents")],
-    ["Military", val(a,"militaryActions"), val(b,"militaryActions")],
-    ["Religion", val(a,"religiousImportance"), val(b,"religiousImportance")],
-    ["Reforms", val(a,"reforms"), val(b,"reforms")],
-    ["Legacy", val(a,"legacy"), val(b,"legacy")],
-    ["Why it matters for NJCL", val(a,"njclImportance"), val(b,"njclImportance")],
-    ["Memory hook", val(a,"memoryHook"), val(b,"memoryHook")],
-  ];
-  const colA = fields.map(f => `<div class="cmp-field"><div class="fl">${esc(f[0])}</div><div class="fv">${f[1]}</div></div>`).join("");
-  const colB = fields.map(f => `<div class="cmp-field"><div class="fl">${esc(f[0])}</div><div class="fv">${f[2]}</div></div>`).join("");
+  
+  const getFields = (e) => {
+    if (isEmperor(e)) {
+      return [
+        ["Reign", fmtReign(e)],
+        ["Dynasty", esc(dyn(e.dynasty).label)],
+        ["Region", val(e,"region")],
+        ["Age at accession / death", `${e.ageAccession??"?"} / ${e.ageDeath??"?"}`],
+        ["Predecessor", e.predecessor?esc(byId(e.predecessor)?.displayName||e.predecessor):"—"],
+        ["Successor", e.successor?esc(byId(e.successor)?.displayName||e.successor):"—"],
+        ["Succession type", val(e,"successionType")],
+        ["Accession", val(e,"accessionMethod")],
+        ["Death", val(e,"deathMethod")],
+        ["Father / Mother", `${val(e,"father")} / ${val(e,"mother")}`],
+        ["Spouses", val(e,"spouses")],
+        ["Children", val(e,"children")],
+        ["Key events", val(e,"keyEvents")],
+        ["Military", val(e,"militaryActions")],
+        ["Religion", val(e,"religiousImportance")],
+        ["Reforms", val(e,"reforms")],
+        ["Legacy", val(e,"legacy")],
+        ["Why it matters for NJCL", val(e,"njclImportance")],
+        ["Memory hook", val(e,"memoryHook")],
+      ];
+    } else {
+      return [
+        ["Year", fmtYear(e.year)],
+        ["Dynasty", esc(dyn(e.dynasty).label)],
+        ["Role", val(e,"role")],
+        ["Biography", val(e,"bio")],
+        ["NJCL Note", val(e,"njclNote")],
+        ["Biological links", (e.biologicalLinks||[]).map(id => byId(id)?.displayName||id).join("; ") || "—"],
+        ["Marital links", (e.maritalLinks||[]).map(id => byId(id)?.displayName||id).join("; ") || "—"],
+        ["Adoptive links", (e.adoptiveLinks||[]).map(id => byId(id)?.displayName||id).join("; ") || "—"],
+        ["Associate links", (e.associateLinks||[]).map(id => byId(id)?.displayName||id).join("; ") || "—"],
+        ["Power links", (e.powerLinks||[]).map(id => byId(id)?.displayName||id).join("; ") || "—"],
+        ["Tags", val(e,"tags")],
+      ];
+    }
+  };
+  
+  const fieldsA = getFields(a);
+  const fieldsB = getFields(b);
+  
+  // Get all unique field labels from both
+  const allLabels = new Set([...fieldsA.map(f => f[0]), ...fieldsB.map(f => f[0])]);
+  
+  // Build comparison rows for each field
+  const comparisonRows = Array.from(allLabels).map(label => {
+    const valA = fieldsA.find(f => f[0] === label)?.[1] || "—";
+    const valB = fieldsB.find(f => f[0] === label)?.[1] || "—";
+    return `<div class="cmp-field"><div class="fl">${esc(label)}</div><div class="fv">${valA}</div></div>`
+         + `<div class="cmp-field"><div class="fl">&nbsp;</div><div class="fv">${valB}</div></div>`;
+  }).join("");
+  
   $("#cmpOut").innerHTML = `<div class="cmp-cols">${head(a)}${head(b)}</div>
-    <div class="cmp-cols" style="margin-top:.6rem"><div class="card">${colA}</div><div class="card">${colB}</div></div>`;
+    <div class="cmp-cols" style="margin-top:.6rem"><div class="card">${comparisonRows}</div></div>`;
 }
 
 /* ============================================================================
